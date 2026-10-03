@@ -67,9 +67,11 @@ def _dims(conn, service_code: str, region: str):
 def _txt(d): return f"{d['description']} {d['usagetype']} {d['group']} {d['family']}".lower()
 
 
-def _pick(dims, all_of=(), any_of=(), none_of=(), unit_has=None, base_tier=True):
+def _pick(dims, all_of=(), any_of=(), none_of=(), unit_has=None, base_tier=True, nonzero=False):
     out = []
     for d in dims:
+        if nonzero and not (d.get("price") or 0) > 0:
+            continue  # skip $0 lines (free tier, promos) when we want a real rate
         t = _txt(d)
         if not all(s.lower() in t for s in all_of):
             continue
@@ -246,12 +248,26 @@ def get_lambda_price(region: str, monthly_requests: float, memory_mb: float = 12
         if not dims:
             return {"found": False, "error": f"No Lambda prices for {region}."}
         arm = architecture.lower() in ("arm", "arm64", "graviton")
+        # Pick the STANDARD on-demand compute + request rates only. Exclude the
+        # $0 free-tier lines (nonzero=True) and non-standard variants
+        # (provisioned, edge, snapstart, ephemeral storage, managed instances).
+        # Standard compute uses unit "Lambda-GB-Second"; storage/web/microvm use
+        # "GB-Seconds", so unit_has filters those out.
+        if arm:
+            req = _pick(dims, all_of=("aws-lambda-requests-arm",), nonzero=True)
+            dur = _pick(dims, all_of=("aws-lambda-duration-arm",), none_of=("provisioned",),
+                        unit_has="lambda-gb-second", nonzero=True)
+        else:
+            req = _pick(dims, all_of=("aws-lambda-requests",), none_of=("arm",), nonzero=True)
+            dur = _pick(dims, all_of=("aws-lambda-duration",), none_of=("arm", "provisioned"),
+                        unit_has="lambda-gb-second", nonzero=True)
         none_arm = () if arm else ("arm",)
-        req = _pick(dims, all_of=("request",), any_of=(("arm",) if arm else ()), none_of=none_arm) \
-              or _pick(dims, all_of=("request",), none_of=none_arm)
-        dur = _pick(dims, any_of=("duration", "gb-second", "gb second"),
-                    all_of=(("arm",) if arm else ()), none_of=none_arm) \
-              or _pick(dims, any_of=("duration", "gb-second"), none_of=none_arm)
+        if not req:  # fallback: any paid request line
+            req = _pick(dims, all_of=("request",), none_of=none_arm, nonzero=True)
+        if not dur:  # fallback: any paid standard-compute GB-second line
+            dur = _pick(dims, any_of=("gb-second", "gb second"),
+                        none_of=none_arm + ("provisioned", "edge", "snapstart", "storage", "micro", "web"),
+                        unit_has="lambda-gb-second", nonzero=True)
         if not req or not dur:
             return {"found": False, "error": "Could not locate Lambda rates.",
                     "hint": "inspect_service_prices('AWSLambda', region)"}
@@ -295,17 +311,24 @@ def get_waf_price(region: str, web_acls: int = 1, rules: int = 5, monthly_reques
     conn = _db()
     try:
         dims = _dims(conn, "awswaf", region)
-        acl = _pick(dims, any_of=("web acl", "webacl"), none_of=("shield",))
-        rule = _pick(dims, all_of=("rule",), none_of=("group", "request", "shield"))
-        reqd = _pick(dims, any_of=("request",))
+        acl = _pick(dims, any_of=("web acl", "webacl"), none_of=("shield",), nonzero=True)
+        rule = _pick(dims, all_of=("rule",), none_of=("group", "request", "shield"), nonzero=True)
+        # Standard per-request rate only — exclude Shield, Bot Control, Fraud
+        # Control, Anti-DDoS, Challenge, WCU-tier and size-variant request lines.
+        reqd = _pick(dims, all_of=("request",),
+                     none_of=("shield", "amr", "bot", "fraud", "challenge", "ddos",
+                              "wcu", "kb", "targeted", "capped", "count"),
+                     nonzero=True)
         if not acl or not rule or not reqd:
             return {"found": False, "error": "Could not locate WAF rates.",
                     "hint": "inspect_service_prices('awswaf', region)"}
-        monthly = web_acls * acl["price"] + rules * rule["price"] + (monthly_requests / 1_000_000) * reqd["price"]
+        # reqd["price"] is PER REQUEST (e.g. 6e-7 = $0.60 per million), so multiply
+        # by the request count directly — do NOT divide requests by a million.
+        monthly = web_acls * acl["price"] + rules * rule["price"] + monthly_requests * reqd["price"]
         return {"found": True, "service": "WAF", "region": region,
                 "assumptions": {"web_acls": web_acls, "rules": rules, "monthly_requests": monthly_requests},
                 "web_acl_monthly_usd": acl["price"], "rule_monthly_usd": rule["price"],
-                "per_million_requests_usd": reqd["price"], "monthly_usd": round(monthly, 2),
+                "per_million_requests_usd": round(reqd["price"] * 1_000_000, 4), "monthly_usd": round(monthly, 2),
                 "yearly_usd": round(monthly * 12, 2), "currency": "USD", "data": _freshness(conn)}
     finally:
         conn.close()
