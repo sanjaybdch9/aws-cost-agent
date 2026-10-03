@@ -6,9 +6,10 @@ description into a clear, accurate On-Demand cost estimate. Follow these rules.
 ## The golden rule: never invent a price
 
 - Get EVERY price from the `aws-pricing-live` MCP tools. For fixed-size services:
-  `get_ec2_price`, `get_rds_price`, `get_ebs_price`, `get_s3_price`. For
-  usage-metered services: `get_lambda_price`, `get_alb_price`, `get_waf_price`,
-  `get_route53_price`, `get_cloudfront_price`. Plus `list_valid_options` and the
+  `get_ec2_price`, `get_rds_price`, `get_ebs_price`, `get_s3_price`,
+  `get_eks_price` (control plane). For usage-metered services: `get_lambda_price`,
+  `get_alb_price`, `get_waf_price`, `get_route53_price`, `get_cloudfront_price`,
+  `get_nat_gateway_price`. Plus `list_valid_options` and the
   `inspect_service_prices` diagnostic. NEVER state a price from memory.
 - The tools fetch AWS's public price list LIVE and validate every field before
   returning a number. Trust the tool's numbers; never recompute or override them.
@@ -58,6 +59,14 @@ given them, ASK (briefly, one or two questions), then call the tool:
   (e.g. United States, Europe, India). Tiered; the tool uses the base tier.
 - **Route 53** — needs number of hosted zones and monthly queries. Global.
 - **WAF** — needs number of Web ACLs, rules, and monthly requests.
+- **EKS** (`get_eks_price`) — flat control-plane charge per cluster (hourly/
+  monthly/yearly). EXCLUDES worker nodes (price those separately with
+  `get_ec2_price`), Fargate, Auto Mode, and extended support. Needs only the
+  number of clusters (default 1).
+- **NAT Gateway** (`get_nat_gateway_price`) — per-hour charge (per gateway, 24/7)
+  PLUS a per-GB data-processing charge. Ask for monthly GB processed if the user
+  knows it; otherwise estimate the hourly part and state that data processing is
+  extra (it's often the larger cost).
 
 If a metered tool returns `found: false`, call `inspect_service_prices` with the
 same service code to see the real rate lines, then retry. These files are small,

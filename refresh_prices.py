@@ -25,7 +25,8 @@ DOWNLOAD_RETRIES = 3    # transient network failures are common on the big price
 
 # --- coverage (edit to taste) ------------------------------------------------
 REGIONS = ["us-east-1"]      # us-east-1 only
-REGIONAL_METERED = {"Lambda": "AWSLambda", "ALB": "AWSELB", "WAF": "awswaf"}
+REGIONAL_METERED = {"Lambda": "AWSLambda", "ALB": "AWSELB", "WAF": "awswaf",
+                    "EKS": "AmazonEKS"}
 GLOBAL_METERED = {"Route53": "AmazonRoute53", "CloudFront": "AmazonCloudFront"}
 # -----------------------------------------------------------------------------
 
@@ -187,8 +188,24 @@ def _build(db_path):
                     price, unit, desc = ep[sku]
                     c.execute("INSERT INTO storage VALUES (?,?,?,?,?,?,?)",
                               ("EBS", region, vt, unit, price, desc, as_of))
+            # NAT Gateway also lives in the EC2 file (per-hour + per-GB-processed).
+            # Stored as dimensions under service_code 'NATGateway'.
+            nat_attrs = {}
+            with open(f, "rb") as fh:
+                for sku, p in ijson.kvitems(fh, "products"):
+                    if p.get("productFamily") == "NAT Gateway":
+                        a = p.get("attributes", {})
+                        nat_attrs[sku] = (a.get("usagetype", ""), a.get("group", ""))
+            nat_p = ondemand_first(f, set(nat_attrs))
+            nat_n = 0
+            for sku, (ut, grp) in nat_attrs.items():
+                if sku in nat_p:
+                    price, unit, desc = nat_p[sku]
+                    c.execute("INSERT INTO dimensions VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              ("NATGateway", region, unit, price, desc, ut, grp, "NAT Gateway", "0", as_of))
+                    nat_n += 1
             c.execute("INSERT INTO meta VALUES (?,?)", (f"pub:AmazonEC2:{region}", as_of))
-            print(f"  EC2 {len(ec2_rows)} rows, EBS {len(ebs_keep)}")
+            print(f"  EC2 {len(ec2_rows)} rows, EBS {len(ebs_keep)}, NAT Gateway {nat_n}")
         finally:
             Path(f).unlink(missing_ok=True)
 

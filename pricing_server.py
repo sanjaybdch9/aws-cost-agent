@@ -56,12 +56,12 @@ def _hourly(price: float) -> dict:
 
 def _dims(conn, service_code: str, region: str):
     rows = conn.execute(
-        "SELECT price_usd, unit, description, usagetype, grp, family, begin_range "
+        "SELECT price_usd, unit, description, usagetype, grp, family, begin_range, as_of "
         "FROM dimensions WHERE service_code=? AND region=?", (service_code, region)
     ).fetchall()
     return [{"price": r["price_usd"], "unit": r["unit"], "description": r["description"],
              "usagetype": r["usagetype"], "group": r["grp"], "family": r["family"],
-             "beginRange": r["begin_range"]} for r in rows]
+             "beginRange": r["begin_range"], "as_of": r["as_of"]} for r in rows]
 
 
 def _txt(d): return f"{d['description']} {d['usagetype']} {d['group']} {d['family']}".lower()
@@ -374,6 +374,68 @@ def get_cloudfront_price(monthly_gb_out: float, monthly_requests: float = 0,
                                 "note": "base-tier rate; deep volume tiers are cheaper"},
                 "per_gb_out_usd": dto["price"], "monthly_usd": round(monthly, 2),
                 "yearly_usd": round(monthly * 12, 2), "currency": "USD", "data": _freshness(conn)}
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def get_eks_price(region: str, clusters: int = 1) -> dict:
+    """On-Demand Amazon EKS control-plane cost (hourly/monthly/yearly) for N
+    standard clusters. This is the flat per-cluster charge only — it EXCLUDES
+    worker nodes (price those with get_ec2_price), Fargate, EKS Auto Mode, and
+    extended support."""
+    conn = _db()
+    try:
+        dims = _dims(conn, "AmazonEKS", region)
+        if not dims:
+            return {"found": False, "error": f"No EKS prices for {region}.",
+                    "hint": "inspect_service_prices('AmazonEKS', region)"}
+        # Standard control plane: usagetype 'AmazonEKS-Hours:perCluster' ($0.10/hr).
+        # Exclude extended support, Outposts-local, provisioned-tier, and the
+        # hundreds of Auto-Mode / Fargate / capability lines.
+        cp = _pick(dims, all_of=("amazoneks-hours:percluster",),
+                   none_of=("outpost", "extended"), nonzero=True)
+        if not cp:
+            return {"found": False, "error": "Could not locate EKS control-plane rate.",
+                    "hint": "inspect_service_prices('AmazonEKS', region)"}
+        return {"found": True, "service": "EKS", "region": region, "currency": "USD",
+                "assumptions": {"clusters": clusters,
+                                "note": "standard control plane only; excludes worker nodes, "
+                                        "Fargate, Auto Mode, and extended support"},
+                "control_plane_hourly_usd": cp["price"], **_hourly(cp["price"] * clusters),
+                "price_description": cp["description"], "priced_as_of": cp.get("as_of"),
+                "data": _freshness(conn)}
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def get_nat_gateway_price(region: str, gateways: int = 1, gb_processed: float = 0) -> dict:
+    """On-Demand NAT Gateway monthly cost = per-hour charge (per gateway, 24/7) +
+    per-GB data-processing charge. gb_processed is total monthly GB that flows
+    through the gateway(s); pass it if known (it's often the larger cost)."""
+    conn = _db()
+    try:
+        dims = _dims(conn, "NATGateway", region)
+        if not dims:
+            return {"found": False, "error": f"No NAT Gateway prices for {region}.",
+                    "hint": "inspect_service_prices('NATGateway', region)"}
+        hourly = _pick(dims, all_of=("natgateway-hours",), nonzero=True) \
+                 or _pick(dims, any_of=("per nat gateway hour", "nat gateway-hour"),
+                          unit_has="hrs", nonzero=True)
+        data = _pick(dims, all_of=("natgateway-bytes",), nonzero=True) \
+               or _pick(dims, any_of=("data processed",), unit_has="gb", nonzero=True)
+        if not hourly or not data:
+            return {"found": False, "error": "Could not locate NAT Gateway rates.",
+                    "hint": "inspect_service_prices('NATGateway', region)"}
+        monthly = gateways * HOURS_PER_MONTH * hourly["price"] + gb_processed * data["price"]
+        return {"found": True, "service": "NATGateway", "region": region, "currency": "USD",
+                "assumptions": {"gateways": gateways, "gb_processed": gb_processed,
+                                "hours": HOURS_PER_MONTH, "note": "data-processing charge is "
+                                "$/GB through the gateway; excludes the usual EC2 data-transfer fees"},
+                "per_hour_usd": hourly["price"], "per_gb_processed_usd": data["price"],
+                "monthly_usd": round(monthly, 2), "yearly_usd": round(monthly * 12, 2),
+                "priced_as_of": hourly.get("as_of"), "data": _freshness(conn)}
     finally:
         conn.close()
 

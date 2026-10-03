@@ -24,10 +24,11 @@ a schedule. User questions only ever touch the fast local database.
 ## What it prices
 
 Fixed-size (On-Demand, Shared tenancy, Used capacity only):
-EC2 (all OS families, license models, SQL options), RDS, EBS, S3.
+EC2 (all OS families, license models, SQL options), RDS, EBS, S3,
+EKS (flat control-plane charge per cluster).
 
 Usage-metered (the agent asks for the usage numbers):
-Lambda, ALB, CloudFront, Route 53, WAF.
+Lambda, ALB, CloudFront, Route 53, WAF, NAT Gateway (hourly + per-GB processed).
 
 Excluded by design for accuracy: Reserved Instances, Savings Plans, Dedicated
 Hosts/Instances, capacity reservations, and BYOL unless explicitly requested.
