@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aws-pricing-live": {
+      "command": "uv",
+      "args": ["run", "--with", "fastmcp", "python", "pricing_server.py"]
+    }
+  }
+}

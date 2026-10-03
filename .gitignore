@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Runtime logs & scratch
+refresh.log
+rebuild.out
+*.tmp
+tmp*.db
+
+# Local editor/agent settings (keep settings.local.json — it enables the MCP server)
+# (nothing else under .claude is tracked)
+
+# Note: prices.db IS committed on purpose so the agent is instant on first clone.
+# Rebuild it any time with: uv run --with ijson python refresh_prices.py
